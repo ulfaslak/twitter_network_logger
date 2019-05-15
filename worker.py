@@ -37,12 +37,12 @@ sentiment_model = dict(
 def score_sentiment(text, lang):
     return sentiment_model[lang].score(text) / len(text.split())
     
-def search_tweets(q, count=100, result_type="recent", lang='en'):
-    return t.search.tweets(q=q, result_type=result_type, count=count, lang=lang)['statuses']
+def search_tweets(q, since_id, count=100, result_type="recent", lang='en'):
+    return t.search.tweets(q=q, since_id=since_id, result_type=result_type, count=count, lang=lang)['statuses']
 
 def tweet_in_subject(text):
     for tag in tags:
-        if tag in text.upper():
+        if tag.lower() in text.lower():
             return True
     return False
 
@@ -62,20 +62,34 @@ def get_user_links_likes(user):
         print("Warning: API fails for user %s" % user)
         return []
 
-def update_users(new_users):
+def default_update_users(users_dict, tweet):
+    screen_name = tweet['user']['screen_name']
+    if screen_name not in users_dict:
+        users_dict.update({screen_name: dict((lang, 0) for lang in langs)})
+    users_dict[screen_name][tweet['lang']] += 1
+    return users_dict
+        
+def update_users_and_tweets(new_tweets):
+    # Load users and tweets
     with open('data/users.json', 'r') as fp:
         users = json.load(fp)
-    with open('data/users.json', 'w') as fp:
-        users = sorted(set(users) | set(new_users))
-        json.dump(users, fp)
-    return users
-    
-def update_tweets(new_tweets):
     with open('data/tweets.json', 'r') as fp:
         tweets = json.load(fp)
+    
+    # Update users
+    for tweet in new_tweets:
+        users = default_update_users(users, tweet)
+
+    # Update tweets
+    tweets.update(dict((tweet['id'], tweet) for tweet in new_tweets))
+
+    # Save users and tweets
+    with open('data/users.json', 'w') as fp:
+        json.dump(users, fp)
     with open('data/tweets.json', 'w') as fp:
-        tweets.update(dict((tweet['id'], tweet) for tweet in new_tweets))
         json.dump(tweets, fp)
+    
+    return users, tweets
 
 def update_links(new_links, filename):
     with open(filename, 'r') as fp:
@@ -89,27 +103,21 @@ def update_links(new_links, filename):
 
 t = Twitter(auth=OAuth(OAUTH_TOKEN, OAUTH_TOKEN_SECRET, CONSUMER_KEY, CONSUMER_SECRET))
 
+since_id = 0
 while True:
-    # Get users that tweeted with #netsci2018 tag
+    # Get users that tweeted with tags in all langs
     print("Searching for tweets with tags %r" % tags)
     collection_tweets = []
     for tag in tags:
         for lang in langs:
-            collection_tweets += search_tweets(tag, lang=lang)
+            collection_tweets += search_tweets(tag, since_id=since_id, lang=lang)
+    
     print("Loaded %d tweets"  % len(collection_tweets), end=" ")
-
-    print("from", end=" ")
-    users = sorted(set(update_users([
-        tweet['user']['screen_name']
-        for tweet in collection_tweets
-        if tweet['text'][:2] != "RT"
-    ])))  # Everybody who has tweeted
-    print("%d different users:" %len(users))
-
-    print("\n".join(users))
     print("\n... saving users")
     print("... saving tweets")
-    update_tweets(collection_tweets)
+
+    users, tweets = update_users_and_tweets(collection_tweets)
+    since_id = max(map(int, tweets.keys()))
 
     # Get retweet links
     links_retweets = []
@@ -163,7 +171,7 @@ while True:
                 break
             try:
                 links_user = get_user_links_likes(user)
-            except: # Twiter Rate Limit Error
+            except twitter.TwitterHTTPError:
                 continue
             continue
 
