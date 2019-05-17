@@ -36,9 +36,28 @@ sentiment_model = dict(
     
 def score_sentiment(text, lang):
     return sentiment_model[lang].score(text) / len(text.split())
-    
+
+def wait(wait_time=900, user=None):
+    # Print warning
+    if user is not None:
+        print("Warning: Rate limit exceeded (user: %s), saving data and waiting %d seconds" % (user, wait_time))
+    else:
+        print("Warning: Rate limit exceeded, waiting %d seconds" % wait_time)
+
+    # Sleep
+    try:
+        sleep(wait_time)
+    except KeyboardInterrupt:
+        return False
+    return True
+
 def search_tweets(q, since_id, count=100, result_type="recent", lang='en'):
-    return t.search.tweets(q=q, since_id=since_id, result_type=result_type, count=count, lang=lang)['statuses']
+    while True:
+        try:
+            return t.search.tweets(q=q, since_id=since_id, result_type=result_type, count=count, lang=lang)['statuses']
+        except twitter.TwitterHTTPError:
+            wait(1800)
+
 
 def tweet_in_subject(text):
     for tag in tags:
@@ -101,10 +120,20 @@ def update_links(new_links, filename):
         fp.write(header + "\n")
         fp.write("\n".join([",".join(l) for l in links]))
 
+# Establish twitter connection
 t = Twitter(auth=OAuth(OAUTH_TOKEN, OAUTH_TOKEN_SECRET, CONSUMER_KEY, CONSUMER_SECRET))
 
-since_id = 0
+# Get the id of the latest stored tweet
+with open("data/tweets.json") as fp:
+    tweets = json.load(fp)
+    if len(tweets) == 0:
+        since_id = 0
+    else:
+        since_id = max(map(int, tweets.keys()))
+
+# Start logging loop
 while True:
+
     # Get users that tweeted with tags in all langs
     print("Searching for tweets with tags %r" % tags)
     collection_tweets = []
@@ -159,21 +188,20 @@ while True:
     links_likes = []
     for user in users:
         try:
+            # getting links for user
             links_user = get_user_links_likes(user)
         except twitter.TwitterHTTPError:
-            print("Warning: Rate limit exceeded (user: %s), saving data and waiting 15 minutes" % user)
+            # store data so far...
             update_links(links_likes, "data/likes.csv")
             links_likes = []
             subprocess.call("bash sync.sh".split())
-            try:
-                sleep(60 * 15)
-            except KeyboardInterrupt:
+            # ...and wait 30 minutes...
+            should_continue = wait(1800, user)
+            if not should_continue:
+                # break if KeyboardInterrupt was detected
                 break
-            try:
-                links_user = get_user_links_likes(user)
-            except twitter.TwitterHTTPError:
-                continue
-            continue
+            # ...then get the user data that failed because of the httperror
+            links_user = get_user_links_likes(user)
 
         print(user, len(links_user))
         links_likes.extend(links_user)
